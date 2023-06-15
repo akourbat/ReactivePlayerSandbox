@@ -1,0 +1,140 @@
+﻿
+(1) Idea to have most of state immutable as much as possible.  For spells - the original spell should be immutable.
+	Then you have a collection of immutable spells and a collection of effects that can influence the resulting actual
+	spell effect -> and you combine the two dynamically in a functional way to compute the resulting spell effects.
+
+(2)	Could probably result in an object, containing dynamic collection of effect objects that would create its own observableы on demand.
+
+(3)	Need to think through the algorithm for evaluating the target's status effects and their impact on incoming spell effects.
+	For now, ideal way seems to be to do that eval on target side, it is both logical and allows for better separation of concerns.
+
+	============
+
+(4) Check if Observable<Func<T,T> is possible - UPD: It is
+(5) Re-consider buff observable to use Finally() to ADD the reversing observable to DynamicData, so that one can cancel any Observable
+	simply by removing the item from it.
+
+(6) Which entity does actual damage calculations on damage - Tick / Attribute State ("AS") / Some service that takes parameters (incl. status
+	effects). What about Tick being Func<AS, AS>() so that directly appiles to AS in Scan?  UPD: Should be "AS", makes more sence.
+
+(7) Should status effects collection by inside Scan()?  UPD: For now simpler to keep it outside for ease of access, otherwide you'd need
+	to reach Scan operator to figure out what Ticks to set (too late).
+
+	==============
+
+(8) Inclined to have Term effects to reverse its effect via Finally( () => this._cache.Add(new DDEffect(Observable.Return(<the reversal effect>))))
+	and yet still do the auto removal from Finally - this probably will get rid of control observable.  
+	Cancelling effect will be just remove it from cache (see also (5)).
+
+(9) Now I am thinking we need two different proxies for game effects - one on source for the CREATE part, and another on target for CONSUME part.
+	The actual spell may actually contain only refences to resulting computed game effect proxies (one or more) - being like a placeholder.  
+	A spell that ends up having DD, DoT and Term components will reference them, but the components should be independent proxies
+	(hooked up to attributes observable as well as buffs/talents via routing).  E.g "Slow" effect can itself be enhanced by some talent (duration).
+
+	Now need to figure out the way of splitting talents that enhance existing effects from those that create complimentary effects (e.g. adding bleed
+	effect to some abilities that dont have it by default).  Also how to tie-in the affected abilities, so that they are aware of new effects added
+	to them.  Comes to mind "Forces can be Creational, Transformational and Destructive" - could be the approach.  Or "CRUD"-like (Create, Update, Delete)/
+
+	CREATE go into its own sourcecache and get Transformed into EffectProxy which needs to hook up both attributes and UPDATE sourcecache (filtered).
+	UPDATE cache separates into part that update attributes object (and does merged observable?), and part that modifies effect proxies in CREATE cache.
+	For now unclear how to update creational proxies - via observable or readonly list of modifiers (TBD).
+	As an idea, base spell can be  treated as talent and go into CREATE cache, thus creating base/default EffectProxy of the spell.
+
+	Also, idea is to have static Directory<string, Func<AS, int>> to provide base calculation for Value in EffectProxy ctor.
+
+(10) Some UPDATE items may have eather direct += effects (straightforward), but also +% effects, so likely each attribute may have to be a 
+	structure with "base" property and one to keep +% coefficients. So not sure if Observable is the answer here, maybe DD should produce read-only
+	collection of UPDATE items, which are then aggregated and applied to AS imperatively.
+
+	=================
+
+(11)  Idea on AoE - make an effect component alongside (or inherited) by each of 3 main typers - DD/DoT/Term - those would need access
+	to positions collection, so makes sence to include it in the list of params for EffectProxy (in addition to AS and Update streams).
+	Component should have data on # of affected entities, shape of AoE/radius etc. Probably can use Join or JoinOn operator
+
+(12) Each generated Obs for abilities could have a lead time (e.g. via Delay()) to account for cast time/animation.  To be cancellable,
+	we are back to the idea of having <control> obs as vehicle for cancellation (vs. removal of object from cache).  Then there should
+	be no double Remove() calls.
+
+(13) Now, if we have positions obs/collection in EffectProxies - probably revisit the idea of making calculations of the final damage
+	by combined ability itself, adjusting properties on effect objects before sending them over to target(s).  Target then would not
+	have to search for things like armor or block bypasses.  The positions collections can offer access to target's status effects/AS by
+	reference.
+
+(14) More thoughts on Status Effects - are they separate effects on their own? Like Term but no numeric impact. Alternatively DoT and Term should
+	somehow to keep track of those.
+
+(15) On Positions obs collection.  Filtered by tiles (each tile gets own and adjacent tiles's positions).  Then for each AoE effect likely its own filter
+	(e.g. dynamic filtering in DD)
+
+(16) Talents like "+20% damage to targets with Bleed" - how about them providing Functions rather than values.  Similar to Rules-based validation.
+
+(17) Aaaand... back to Observable<Func<AS>> or <AS, string>? - string could be combat log? Whereas CREATE Effect proxy accepts similar Func obs
+	in addition to AS obs and coords + target status effects, and on Susbscribe produces Observable<Func<AS>> to be appliead by target.
+
+	=====================
+
+(18) Latest is structuring abilities similar to AS - cache of CREATE effects (incl. original "default" ability) -> into proxies -> merging into scan,
+	where seed is a collection as well (or an object that contains a collection).  UDATE effects cache is filtered into those that update AS
+	and those that update abilities directly.  Uniform approach, but Func<> in observable are different ( as seeds are different types).
+	AS is supposed to include status effects now.
+	
+	=====================
+
+(*) Construct world as observable objects (e.g. solar system - each body is observable of gravity, light/radiation).  Observable may have "weight"? 
+	like the cloder you get to source of gravity, the stronger it is.  or amoung people - observables of influence (friends do more than chance 
+	encounters). An object has a protected state, and a collection of other objects that "influence" that state (e.g. via "Scan").
+	State can possible be broken down into its own collection of primitives.  Maybe worth another look at Graph databases.
+
+(*) Further on above: the initial state object is stored in the Db, and then any modifier of that state goes into a collection - (can imagine
+	as planet orbited by satellites), and exposes observable of requred change which is picked up and applied to state.  Not dissimilar
+	to Event Sourcing, except "events" here are objects that "project" its modifier/change.  Could be ususal "data object -> proxy" pattern,
+	could also expose Func to be applied to state object.
+
+	======================
+
+(*) So, a typical object in actor app would be a default state + a collection of mods, contained by grain (default state not having
+	reference to mods at all).
+(*) What if we view game object (like sword) as "contributor" to a player that wears it? It may have a attribute contribution,
+	and even "talent-like" or "proc" contributions.  So mods to default sword can shape final contribution of the sword to a player.
+	So in that case, we can think of game object potentially having similar set-up as player itself, and player collects all
+	contributions from various sources (talents, buffs, items) to compute final player state. (sword may have temp buffs applied to it too -
+	lie wizerd oil etc.).
+
+	=======================
+
+(**) Explore a generic class for the above (maybe interfaces for mods too). A Mod can also be inplementing it, i.e. itself having
+	collection of mods. So one can kind of imagine a graph-like system with core state connecting to mods, which themselves can connect to
+	mods of their own.
+
+	Reaqtor is worth watching, it can potentialy solve the problem of serializing Observable<Func<State>>.
+
+(*) The initial state could be immutable, adding mods does not change it, but "wraps" it, so that outcome is updated state.  We store
+	the initial state and ids of mods, so it is recreated on load. (e.g. price is mod to a book, book may or may not have price in its initial
+	state etc.)
+(*) As mentioned above, modded entity can itself be a mod for a higher tier entity and so on. Uniform Interfaces (like Observer/Observable)?
+(*) Question is, if initial state is immutable, how do we account for mods? Dictionary<string, something>? Dynamic object? E.g. some properties
+	could be moved to "metadata" part, that can have descriptions etc.  TODO.
+
+	== Object is state (initial) and collection of mods that add to state a collection of Actions (behaviour), as well as collection of triggers
+		that may call those actions (hooking up to some observable of events).  Behaviour relies on state to compute its outcome.
+
+===========
+по сути надо свести каждую абилку к ограниченному набору элементов (прямой урон, дот, статус эффект и т.п.), и рассматривать таланты как
+"knowledge", позволяющие добавить те или иные элементы к ""базовому элементу" абилки.  возможно collection of elements как ядро абилки
+
+--- или вот еще идея - рассматривать абилку как "материнскую плату" в компе.  у тебя есть разъему/гнезда, в которые втыкаются "моды",
+	а так же можно втыкать разные процессоры (аналогия с базовой абилкой).
+
+===========
+еще идея на тему виртуализации по типу исбоксера - мы имеем делегат функцию, по дефолту туда прописывается функция конструктором, а затем
+ее можно свичить на другую, с другим функционалом (но тем же signature).
+
+- back to thinking about grain as aggregate root, that has references to in-process modules (like spell book, inventory).
+- types like sword - regular non-actors, have Id of шаблон and mods like enchant, durability, quantity etc. we dont really care about
+  much of its data if it is in invetory, but do when it is equipped.  client has its own "шаблоны" and server may have in-memory
+  service that loads them from db on start-up and is used to hidrate when necessary.
+- grain could be a guardian of state and its consistency, whereas most of the logic acting on state being pushed into services opearting
+  on that data, provided by garin by reference. turn-based nature of actor ensures consistency.  So, may revisit document stores.
+
+
